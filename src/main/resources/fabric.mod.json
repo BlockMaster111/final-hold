@@ -3,12 +3,12 @@
   "id": "whold",
   "version": "${version}",
   "name": "WHold",
-  "description": "Client-side movement, hotbar, Auto Invincibility and Boom automation.",
+  "description": "Clientseitige Bewegungs- und Hotbar-Befehle mit Laufzeit und Verzögerung.",
   "authors": [
     "WHold"
   ],
   "contact": {},
-  "license": "GPL-3.0-only",
+  "license": "MIT",
   "environment": "client",
   "entrypoints": {
     "client": [
