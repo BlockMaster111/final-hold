@@ -60,7 +60,7 @@ public final class WHoldClient implements ClientModInitializer {
 
             if (pendingHotbarSlot >= 0 && now >= switchSlotAtNanos) {
                 if (client.player != null) {
-                    client.player.getInventory().selected = pendingHotbarSlot;
+                    client.player.getInventory().setSelectedSlot(pendingHotbarSlot);
                 }
                 pendingHotbarSlot = -1;
             }
@@ -127,7 +127,7 @@ public final class WHoldClient implements ClientModInitializer {
         if (delaySeconds <= 0.0f) {
             Minecraft client = Minecraft.getInstance();
             if (client.player != null) {
-                client.player.getInventory().selected = pendingHotbarSlot;
+                client.player.getInventory().setSelectedSlot(pendingHotbarSlot);
             }
             pendingHotbarSlot = -1;
         }
