@@ -5,6 +5,7 @@ import com.mojang.brigadier.arguments.IntegerArgumentType;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
+import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.InteractionHand;
@@ -30,8 +31,11 @@ public final class WHoldClient implements ClientModInitializer {
 
     // ---- Barrier Boom (aus der Quoi-Mod) ----
     private static final int BOOM_HOTBAR_SLOT = 8;   // TNT liegt immer auf Hotbar-Slot 8 (wird nicht erkannt)
+    private static final int BOOM_CLICK_INTERVAL_TICKS = 2;   // alle 2 Ticks ein Rechtsklick (10x pro Sekunde)
+    private static final String GATE_DESTROYED_MESSAGE = "The gate has been destroyed!";
     private static boolean boomEnabled = false;
-    private static boolean boomClicked = false;
+    private static boolean boomDone = false;      // Nachricht kam -> nicht mehr klicken
+    private static int boomCooldownTicks = 0;
 
     private static int pendingHotbarSlot = -1;
     private static long switchSlotAtNanos = 0L;
@@ -73,6 +77,13 @@ public final class WHoldClient implements ClientModInitializer {
                         )
                     )
             );
+        });
+
+        // Gate zerstoert -> Klicken beenden
+        ClientReceiveMessageEvents.GAME.register((message, overlay) -> {
+            if (!overlay && boomEnabled && message.getString().contains(GATE_DESTROYED_MESSAGE)) {
+                boomDone = true;
+            }
         });
 
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
@@ -166,7 +177,8 @@ public final class WHoldClient implements ClientModInitializer {
         boolean enabled
     ) {
         boomEnabled = enabled;
-        boomClicked = false;
+        boomDone = false;
+        boomCooldownTicks = 0;
         source.sendFeedback(Component.literal(
             "Barrier Boom " + (enabled ? "an (TNT auf Hotbar-Slot " + BOOM_HOTBAR_SLOT + ")." : "aus.")
         ));
@@ -174,31 +186,45 @@ public final class WHoldClient implements ClientModInitializer {
     }
 
     /**
-     * Schaust du auf eine Barrier oder Nether Bricks: Slot 8 waehlen, Block anschlagen (TNT zuenden), schwingen.
-     * Pro Anschauen nur einmal - erst wenn du auf keinen Block mehr schaust, geht es wieder von vorn los.
+     * Schaust du auf eine Barrier oder Nether Bricks: Slot 8 waehlen und mit dem TNT rechtsklicken - immer wieder,
+     * bis "The gate has been destroyed!" im Chat kommt. Danach wird nicht mehr geklickt, bis du das Ziel
+     * aus dem Fadenkreuz verlierst (dann ist der Boom fuer das naechste Gate wieder bereit).
      */
     private static void tickBoom(Minecraft client) {
         if (!boomEnabled) return;
         if (client.player == null || client.level == null || client.gameMode == null) {
-            boomClicked = false;
+            boomDone = false;
+            boomCooldownTicks = 0;
             return;
         }
         if (client.gui.screen() != null) return;
 
+        if (boomCooldownTicks > 0) boomCooldownTicks--;
+
+        boolean onTarget = false;
         HitResult result = client.hitResult;
         if (result instanceof BlockHitResult hit && hit.getType() == HitResult.Type.BLOCK) {
             Block block = client.level.getBlockState(hit.getBlockPos()).getBlock();
 
-            if ((block == Blocks.BARRIER || block == Blocks.NETHER_BRICKS) && !boomClicked) {
-                client.player.getInventory().setSelectedSlot(BOOM_HOTBAR_SLOT - 1);
-                client.gameMode.startDestroyBlock(hit.getBlockPos(), hit.getDirection());
-                // 26.3: swing() braucht eine SwingAnimation - Standard-Animation
-                client.player.swing(InteractionHand.MAIN_HAND, SwingAnimation.DEFAULT, true);
-                boomClicked = true;
+            if (block == Blocks.BARRIER || block == Blocks.NETHER_BRICKS) {
+                onTarget = true;
+
+                if (!boomDone && boomCooldownTicks <= 0) {
+                    client.player.getInventory().setSelectedSlot(BOOM_HOTBAR_SLOT - 1);
+
+                    // Rechtsklick wie in Vanilla: erst auf den Block, wenn das nichts bewirkt, ins Leere
+                    var interaction = client.gameMode.useItemOn(client.player, InteractionHand.MAIN_HAND, hit);
+                    if (!interaction.consumesAction()) {
+                        client.gameMode.useItem(client.player, InteractionHand.MAIN_HAND);
+                    }
+                    client.player.swing(InteractionHand.MAIN_HAND, SwingAnimation.DEFAULT, true);
+
+                    boomCooldownTicks = BOOM_CLICK_INTERVAL_TICKS;
+                }
             }
-        } else {
-            boomClicked = false;
         }
+
+        if (!onTarget) boomDone = false;
     }
 
     private static String displayName(Move move) {
