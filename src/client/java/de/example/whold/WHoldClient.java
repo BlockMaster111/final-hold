@@ -1,6 +1,7 @@
 package de.example.whold;
 
 import com.mojang.brigadier.arguments.FloatArgumentType;
+import com.mojang.brigadier.arguments.IntegerArgumentType;
 import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
@@ -21,20 +22,48 @@ public final class WHoldClient implements ClientModInitializer {
     private static boolean waiting = false;
     private static boolean holding = false;
 
+    private static int pendingHotbarSlot = -1;
+    private static long switchSlotAtNanos = 0L;
+
     @Override
     public void onInitializeClient() {
-        ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) ->
+        ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) -> {
             dispatcher.register(
                 literal("move")
                     .then(moveArgument("w", Move.W))
                     .then(moveArgument("a", Move.A))
                     .then(moveArgument("d", Move.D))
                     .then(moveArgument("sneak", Move.SNEAK))
-            )
-        );
+            );
+
+            dispatcher.register(
+                literal("slot")
+                    .then(argument("hotbar_nummer", IntegerArgumentType.integer(1, 9))
+                        .executes(context -> scheduleSlotSwitch(
+                            context.getSource(),
+                            IntegerArgumentType.getInteger(context, "hotbar_nummer"),
+                            0.0f
+                        ))
+                        .then(argument("verzoegerung", FloatArgumentType.floatArg(0.0f, 3600.0f))
+                            .executes(context -> scheduleSlotSwitch(
+                                context.getSource(),
+                                IntegerArgumentType.getInteger(context, "hotbar_nummer"),
+                                FloatArgumentType.getFloat(context, "verzoegerung")
+                            ))
+                        )
+                    )
+            );
+        });
 
         ClientTickEvents.END_CLIENT_TICK.register(client -> {
             long now = System.nanoTime();
+
+            if (pendingHotbarSlot >= 0 && now >= switchSlotAtNanos) {
+                if (client.player != null) {
+                    client.player.getInventory().selected = pendingHotbarSlot;
+                }
+                pendingHotbarSlot = -1;
+            }
 
             if (waiting && now >= startAtNanos) {
                 press(client, activeMove);
@@ -83,6 +112,31 @@ public final class WHoldClient implements ClientModInitializer {
                     })
                 )
             );
+    }
+
+
+    private static int scheduleSlotSwitch(
+        net.fabricmc.fabric.api.client.command.v2.FabricClientCommandSource source,
+        int hotbarNumber,
+        float delaySeconds
+    ) {
+        long delayNanos = (long) (delaySeconds * 1_000_000_000L);
+        switchSlotAtNanos = System.nanoTime() + delayNanos;
+        pendingHotbarSlot = hotbarNumber - 1;
+
+        if (delaySeconds <= 0.0f) {
+            Minecraft client = Minecraft.getInstance();
+            if (client.player != null) {
+                client.player.getInventory().selected = pendingHotbarSlot;
+            }
+            pendingHotbarSlot = -1;
+        }
+
+        source.sendFeedback(Component.literal(
+            "Wechsle zu Hotbar-Slot " + hotbarNumber +
+            (delaySeconds > 0.0f ? " in " + delaySeconds + " Sekunden." : ".")
+        ));
+        return 1;
     }
 
     private static String displayName(Move move) {

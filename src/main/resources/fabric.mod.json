@@ -3,7 +3,7 @@
   "id": "whold",
   "version": "${version}",
   "name": "WHold",
-  "description": "Clientseitige Bewegungsbefehle mit Laufzeit und Verzögerung.",
+  "description": "Clientseitige Bewegungs- und Hotbar-Befehle mit Laufzeit und Verzögerung.",
   "authors": [
     "WHold"
   ],
