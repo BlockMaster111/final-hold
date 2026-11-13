@@ -6,7 +6,6 @@ import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.minecraft.client.Minecraft;
-import net.minecraft.core.component.DataComponents;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.item.component.SwingAnimation;
@@ -193,10 +192,8 @@ public final class WHoldClient implements ClientModInitializer {
             if ((block == Blocks.BARRIER || block == Blocks.NETHER_BRICKS) && !boomClicked) {
                 client.player.getInventory().setSelectedSlot(BOOM_HOTBAR_SLOT - 1);
                 client.gameMode.startDestroyBlock(hit.getBlockPos(), hit.getDirection());
-                // 26.3: swing() braucht eine SwingAnimation - die des Items in der Hand (TNT), sonst Standard
-                SwingAnimation animation = client.player.getItemInHand(InteractionHand.MAIN_HAND)
-                    .getOrDefault(DataComponents.SWING_ANIMATION, SwingAnimation.DEFAULT);
-                client.player.swing(InteractionHand.MAIN_HAND, animation, true);
+                // 26.3: swing() braucht eine SwingAnimation - Standard-Animation
+                client.player.swing(InteractionHand.MAIN_HAND, SwingAnimation.DEFAULT, true);
                 boomClicked = true;
             }
         } else {
