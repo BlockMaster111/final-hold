@@ -36,7 +36,8 @@ public final class WHoldClient implements ClientModInitializer {
     private static final int BOOM_CLICK_INTERVAL_TICKS = 2;   // alle 2 Ticks ein Linksklick (10x pro Sekunde)
     private static final String GATE_DESTROYED_MESSAGE = "The gate has been destroyed!";
     private static boolean boomEnabled = false;
-    private static boolean boomDone = false;      // Nachricht kam -> nicht mehr klicken
+    private static final double BOOM_PAUSE_SECONDS = 10.0;   // nach der Gate-Nachricht so lange nicht klicken
+    private static volatile long boomPauseUntilNanos = 0L;
     private static int boomCooldownTicks = 0;
 
     private static int pendingHotbarSlot = -1;
@@ -84,7 +85,7 @@ public final class WHoldClient implements ClientModInitializer {
         // Gate zerstoert -> Klicken beenden
         ClientReceiveMessageEvents.GAME.register((message, overlay) -> {
             if (!overlay && boomEnabled && message.getString().contains(GATE_DESTROYED_MESSAGE)) {
-                boomDone = true;
+                boomPauseUntilNanos = System.nanoTime() + (long) (BOOM_PAUSE_SECONDS * 1_000_000_000L);
             }
         });
 
@@ -188,7 +189,7 @@ public final class WHoldClient implements ClientModInitializer {
         boolean enabled
     ) {
         boomEnabled = enabled;
-        boomDone = false;
+        boomPauseUntilNanos = 0L;
         boomCooldownTicks = 0;
         source.sendFeedback(Component.literal(
             "Barrier Boom " + (enabled ? "an (TNT auf Hotbar-Slot " + BOOM_HOTBAR_SLOT + ")." : "aus.")
@@ -198,13 +199,12 @@ public final class WHoldClient implements ClientModInitializer {
 
     /**
      * Schaust du auf eine Barrier oder Nether Bricks: Slot 8 waehlen und mit dem TNT linksklicken - immer wieder,
-     * bis "The gate has been destroyed!" im Chat kommt. Danach wird nicht mehr geklickt, bis du das Ziel
-     * aus dem Fadenkreuz verlierst (dann ist der Boom fuer das naechste Gate wieder bereit).
+     * bis "The gate has been destroyed!" im Chat kommt. Danach wird BOOM_PAUSE_SECONDS lang nicht geklickt.
      */
     private static void tickBoom(Minecraft client) {
         if (!boomEnabled) return;
         if (client.player == null || client.level == null || client.gameMode == null) {
-            boomDone = false;
+            boomPauseUntilNanos = 0L;
             boomCooldownTicks = 0;
             return;
         }
@@ -212,15 +212,14 @@ public final class WHoldClient implements ClientModInitializer {
 
         if (boomCooldownTicks > 0) boomCooldownTicks--;
 
-        boolean onTarget = false;
+        boolean paused = System.nanoTime() < boomPauseUntilNanos;
+
         HitResult result = client.hitResult;
         if (result instanceof BlockHitResult hit && hit.getType() == HitResult.Type.BLOCK) {
             Block block = client.level.getBlockState(hit.getBlockPos()).getBlock();
 
             if (block == Blocks.BARRIER || block == Blocks.NETHER_BRICKS) {
-                onTarget = true;
-
-                if (!boomDone && boomCooldownTicks <= 0) {
+                if (!paused && boomCooldownTicks <= 0) {
                     client.player.getInventory().setSelectedSlot(BOOM_HOTBAR_SLOT - 1);
 
                     // Linksklick auf den Block
@@ -231,8 +230,6 @@ public final class WHoldClient implements ClientModInitializer {
                 }
             }
         }
-
-        if (!onTarget) boomDone = false;
     }
 
     private static String displayName(Move move) {
