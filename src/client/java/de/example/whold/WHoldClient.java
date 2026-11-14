@@ -6,6 +6,7 @@ import net.fabricmc.api.ClientModInitializer;
 import net.fabricmc.fabric.api.client.command.v2.ClientCommandRegistrationCallback;
 import net.fabricmc.fabric.api.client.event.lifecycle.v1.ClientTickEvents;
 import net.fabricmc.fabric.api.client.message.v1.ClientReceiveMessageEvents;
+import net.minecraft.client.KeyMapping;
 import net.minecraft.client.Minecraft;
 import net.minecraft.network.chat.Component;
 import net.minecraft.world.InteractionHand;
@@ -28,10 +29,11 @@ public final class WHoldClient implements ClientModInitializer {
     private static long releaseAtNanos = 0L;
     private static boolean waiting = false;
     private static boolean holding = false;
+    private static boolean userOwned = false;   // Taste wurde schon von Hand gehalten, als der Auto-Move startete
 
     // ---- Barrier Boom (aus der Quoi-Mod) ----
     private static final int BOOM_HOTBAR_SLOT = 8;   // TNT liegt immer auf Hotbar-Slot 8 (wird nicht erkannt)
-    private static final int BOOM_CLICK_INTERVAL_TICKS = 2;   // alle 2 Ticks ein Rechtsklick (10x pro Sekunde)
+    private static final int BOOM_CLICK_INTERVAL_TICKS = 2;   // alle 2 Ticks ein Linksklick (10x pro Sekunde)
     private static final String GATE_DESTROYED_MESSAGE = "The gate has been destroyed!";
     private static boolean boomEnabled = false;
     private static boolean boomDone = false;      // Nachricht kam -> nicht mehr klicken
@@ -98,16 +100,26 @@ public final class WHoldClient implements ClientModInitializer {
                 pendingHotbarSlot = -1;
             }
 
-            if (waiting && now >= startAtNanos) {
-                press(client, activeMove);
-                waiting = false;
-                holding = true;
+            if (waiting && activeMove != null) {
+                if (now >= startAtNanos) {
+                    startHold(client, activeMove);
+                } else {
+                    consumePhysicalPress(keyOf(client, activeMove));   // alte Tastendruecke verwerfen
+                }
             }
 
-            if (holding && now >= releaseAtNanos) {
-                release(client, activeMove);
-                holding = false;
-                activeMove = null;
+            if (holding && activeMove != null) {
+                if (consumePhysicalPress(keyOf(client, activeMove))) {
+                    // Du hast die Taste selbst gedrueckt: deine Eingabe uebernimmt, der Auto-Move endet,
+                    // ohne die Taste loszulassen (bei W nur der automatische Sprint).
+                    release(client, activeMove, true);
+                    holding = false;
+                    activeMove = null;
+                } else if (now >= releaseAtNanos) {
+                    release(client, activeMove, userOwned);
+                    holding = false;
+                    activeMove = null;
+                }
             }
         });
     }
@@ -122,8 +134,8 @@ public final class WHoldClient implements ClientModInitializer {
                         float delay = FloatArgumentType.getFloat(context, "verzoegerung");
                         Minecraft client = Minecraft.getInstance();
 
-                        if (activeMove != null) {
-                            release(client, activeMove);
+                        if (activeMove != null && holding) {
+                            release(client, activeMove, userOwned);
                         }
 
                         activeMove = move;
@@ -133,8 +145,7 @@ public final class WHoldClient implements ClientModInitializer {
                         holding = false;
 
                         if (!waiting) {
-                            press(client, activeMove);
-                            holding = true;
+                            startHold(client, activeMove);
                         }
 
                         context.getSource().sendFeedback(Component.literal(
@@ -186,7 +197,7 @@ public final class WHoldClient implements ClientModInitializer {
     }
 
     /**
-     * Schaust du auf eine Barrier oder Nether Bricks: Slot 8 waehlen und mit dem TNT rechtsklicken - immer wieder,
+     * Schaust du auf eine Barrier oder Nether Bricks: Slot 8 waehlen und mit dem TNT linksklicken - immer wieder,
      * bis "The gate has been destroyed!" im Chat kommt. Danach wird nicht mehr geklickt, bis du das Ziel
      * aus dem Fadenkreuz verlierst (dann ist der Boom fuer das naechste Gate wieder bereit).
      */
@@ -212,11 +223,8 @@ public final class WHoldClient implements ClientModInitializer {
                 if (!boomDone && boomCooldownTicks <= 0) {
                     client.player.getInventory().setSelectedSlot(BOOM_HOTBAR_SLOT - 1);
 
-                    // Rechtsklick wie in Vanilla: erst auf den Block, wenn das nichts bewirkt, ins Leere
-                    var interaction = client.gameMode.useItemOn(client.player, InteractionHand.MAIN_HAND, hit);
-                    if (!interaction.consumesAction()) {
-                        client.gameMode.useItem(client.player, InteractionHand.MAIN_HAND);
-                    }
+                    // Linksklick auf den Block
+                    client.gameMode.startDestroyBlock(hit.getBlockPos(), hit.getDirection());
                     client.player.swing(InteractionHand.MAIN_HAND, SwingAnimation.DEFAULT, true);
 
                     boomCooldownTicks = BOOM_CLICK_INTERVAL_TICKS;
@@ -236,6 +244,34 @@ public final class WHoldClient implements ClientModInitializer {
         };
     }
 
+    private static KeyMapping keyOf(Minecraft client, Move move) {
+        return switch (move) {
+            case W -> client.options.keyUp;
+            case A -> client.options.keyLeft;
+            case D -> client.options.keyRight;
+            case SNEAK -> client.options.keyShift;
+        };
+    }
+
+    /**
+     * Wurde die Taste physisch gedrueckt, seit zuletzt nachgesehen wurde? Programmatisches setDown() zaehlt hier
+     * nicht, nur echte Tastendruecke (KeyMapping-Klickzaehler).
+     */
+    private static boolean consumePhysicalPress(KeyMapping key) {
+        boolean pressed = false;
+        while (key.consumeClick()) pressed = true;
+        return pressed;
+    }
+
+    private static void startHold(Minecraft client, Move move) {
+        KeyMapping key = keyOf(client, move);
+        userOwned = key.isDown();          // hielt der Spieler die Taste schon selbst?
+        press(client, move);
+        consumePhysicalPress(key);         // Druecke von vorher verwerfen
+        waiting = false;
+        holding = true;
+    }
+
     private static void press(Minecraft client, Move move) {
         switch (move) {
             case W -> {
@@ -248,16 +284,17 @@ public final class WHoldClient implements ClientModInitializer {
         }
     }
 
-    private static void release(Minecraft client, Move move) {
+    /** keepKey = true: die Taste selbst bleibt gedrueckt (gehoert dem Spieler), nur der Auto-Sprint wird geloest. */
+    private static void release(Minecraft client, Move move, boolean keepKey) {
         if (move == null) return;
         switch (move) {
             case W -> {
-                client.options.keyUp.setDown(false);
+                if (!keepKey) client.options.keyUp.setDown(false);
                 client.options.keySprint.setDown(false);
             }
-            case A -> client.options.keyLeft.setDown(false);
-            case D -> client.options.keyRight.setDown(false);
-            case SNEAK -> client.options.keyShift.setDown(false);
+            case A -> { if (!keepKey) client.options.keyLeft.setDown(false); }
+            case D -> { if (!keepKey) client.options.keyRight.setDown(false); }
+            case SNEAK -> { if (!keepKey) client.options.keyShift.setDown(false); }
         }
     }
 }
